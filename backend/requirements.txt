@@ -1,0 +1,9 @@
+fastapi>=0.100
+uvicorn[standard]>=0.23
+pydantic>=2
+numpy>=1.24
+pandas>=2
+scikit-learn>=1.2
+# Optional: the API falls back to EWMA + RandomForest if unavailable.
+xgboost>=1.7
+
