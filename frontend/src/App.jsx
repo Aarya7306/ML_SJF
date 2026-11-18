@@ -1,129 +1,446 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Activity, BarChart3, BrainCircuit, Cpu, Database, Gauge, GitCompare, LayoutDashboard, Play, RefreshCw, Settings, SlidersHorizontal, Sparkles, Table2, Timer, WandSparkles } from 'lucide-react'
-import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import {
+  Activity, BarChart3, BrainCircuit, CheckCircle2, Cpu, Database, Gauge,
+  LayoutDashboard, ListOrdered, Play, RefreshCw, Target, Timer, TrendingUp
+} from 'lucide-react'
+import {
+  Bar, BarChart, CartesianGrid, ReferenceLine, ResponsiveContainer,
+  Scatter, ScatterChart, Tooltip, XAxis, YAxis
+} from 'recharts'
 import { api } from './services/api'
 
-const nav = [
-  ['Overview', LayoutDashboard, 'overview'],
-  ['Processes & Simulation', Cpu, 'workload'],
-  ['ML Studio', BrainCircuit, 'ml'],
-  ['Performance & What-if', BarChart3, 'performance'],
-  ['Settings & Adaptive Monitor', Settings, 'settings']
-]
+const algorithms = ['fcfs', 'sjf', 'ml_sjf', 'adaptive_ml_sjf']
 const defaultProcesses = [
   { process_id: 'P1', arrival_time: 0, actual_burst: 12, priority: 2 },
   { process_id: 'P2', arrival_time: 1, actual_burst: 7, priority: 1 },
   { process_id: 'P3', arrival_time: 3, actual_burst: 18, priority: 3 },
   { process_id: 'P4', arrival_time: 5, actual_burst: 5, priority: 2 }
 ]
+const pages = [
+  ['Overview', LayoutDashboard, 'overview'],
+  ['Processes', Cpu, 'processes'],
+  ['Scheduling Comparison', BarChart3, 'comparison'],
+  ['ML Model Analysis', BrainCircuit, 'ml'],
+  ['Adaptive Scheduler Analysis', TrendingUp, 'adaptive']
+]
 
-function Card({ children, className = '' }) { return <section className={`card ${className}`}>{children}</section> }
-function Metric({ icon: Icon, label, value, note, accent = 'blue' }) {
-  return <Card className="metric"><div className={`metric-icon ${accent}`}><Icon size={18}/></div><div><span className="eyebrow">{label}</span><strong>{value}</strong><small>{note}</small></div></Card>
+function Card({ children, className = '' }) {
+  return <section className={`card ${className}`}>{children}</section>
 }
-function Button({ children, onClick, variant = 'primary', disabled = false }) { return <button className={`button ${variant}`} onClick={onClick} disabled={disabled}>{children}</button> }
-function Tabs({ items, value, onChange }) { return <div className="tabs">{items.map(([key, label]) => <button key={key} className={value === key ? 'selected' : ''} onClick={() => onChange(key)}>{label}</button>)}</div> }
-function Empty({ text }) { return <div className="empty"><BarChart3 size={25}/><span>{text}</span></div> }
+
+function Button({ children, onClick, variant = 'primary', disabled = false, className = '' }) {
+  return <button className={`button ${variant} ${className}`} onClick={onClick} disabled={disabled}>{children}</button>
+}
+
+function Empty({ text }) {
+  return <div className="empty"><BarChart3 size={28} /><span>{text}</span></div>
+}
+
+function Metric({ icon: Icon, label, value, note, accent = 'blue' }) {
+  return (
+    <Card className="metric">
+      <div className={`metric-icon ${accent}`}><Icon size={19} /></div>
+      <div><span className="eyebrow">{label}</span><strong>{value}</strong><small>{note}</small></div>
+    </Card>
+  )
+}
+
+function formatAlgorithm(name) {
+  return (name || '').replaceAll('_', '-').toUpperCase()
+}
+
+function SmallScatterPoint({ cx, cy, fill }) {
+  return <circle cx={cx} cy={cy} r={2.25} fill={fill} fillOpacity={0.46} />
+}
+
+function ActualPredictedTooltip({ active, payload }) {
+  if (!active || !payload?.length) return null
+  const point = payload[0].payload
+  return (
+    <div className="chart-tooltip">
+      <b>Held-out observation</b>
+      <span>Actual: {Number(point.actual).toFixed(2)} ms</span>
+      <span>Predicted: {Number(point.predicted).toFixed(2)} ms</span>
+    </div>
+  )
+}
+
+function ResidualTooltip({ active, payload }) {
+  if (!active || !payload?.length) return null
+  const point = payload[0].payload
+  return (
+    <div className="chart-tooltip">
+      <b>Held-out observation</b>
+      <span>Predicted: {Number(point.predicted).toFixed(2)} ms</span>
+      <span>Actual: {Number(point.actual).toFixed(2)} ms</span>
+      <span>Residual: {Number(point.residual).toFixed(2)} ms</span>
+    </div>
+  )
+}
 
 export default function App() {
   const [page, setPage] = useState('overview')
-  const [workloadTab, setWorkloadTab] = useState('processes')
-  const [performanceTab, setPerformanceTab] = useState('comparison')
-  const [settingsTab, setSettingsTab] = useState('settings')
   const [summary, setSummary] = useState(null)
-  const [metrics, setMetrics] = useState([])
-  const [adaptive, setAdaptive] = useState(null)
+  const [analysis, setAnalysis] = useState(null)
   const [processes, setProcesses] = useState(defaultProcesses)
-  const [algorithm, setAlgorithm] = useState('adaptive_ml_sjf')
   const [results, setResults] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [analysisLoading, setAnalysisLoading] = useState(true)
   const [message, setMessage] = useState('')
+  const [messageType, setMessageType] = useState('info')
+
+  const notify = (text, type = 'info') => {
+    setMessage(text)
+    setMessageType(type)
+  }
 
   const loadData = async () => {
+    setAnalysisLoading(true)
     try {
-      const [s, m, a] = await Promise.all([api.summary(), api.metrics(), api.adaptive()])
-      setSummary(s); setMetrics(m.models || []); setAdaptive(a)
-    } catch (error) { setMessage(`Backend unavailable: ${error.message}`) }
+      const [summaryData, analysisData] = await Promise.all([api.summary(), api.analysis()])
+      setSummary(summaryData)
+      setAnalysis(analysisData)
+    } catch (error) {
+      notify(error.message, 'warning')
+    } finally {
+      setAnalysisLoading(false)
+    }
   }
+
   useEffect(() => { loadData() }, [])
+
   const run = async () => {
-    setLoading(true); setMessage('')
+    const ids = processes.map(process => process.process_id.trim())
+    if (ids.some(id => !id) || new Set(ids).size !== ids.length) {
+      notify('Each process must have a unique Process ID.', 'warning')
+      return
+    }
+    if (processes.some(process => Number(process.actual_burst) <= 0 || Number(process.arrival_time) < 0)) {
+      notify('Arrival time must be non-negative and burst time must be greater than zero.', 'warning')
+      return
+    }
+
+    setLoading(true)
+    notify('Running the identical workload through all four policies...')
     try {
-      const simulation = await api.compare({ processes, algorithms: ['fcfs', 'sjf', 'ml_sjf', 'adaptive_ml_sjf'] })
-      if (!simulation?.results?.length || !simulation?.schedules?.adaptive_ml_sjf?.length) {
-        throw new Error('Simulation completed without execution events.')
+      const simulation = await api.compare({
+        processes: processes.map(process => ({
+          ...process,
+          process_id: process.process_id.trim(),
+          arrival_time: Number(process.arrival_time),
+          actual_burst: Number(process.actual_burst),
+          priority: Number(process.priority)
+        })),
+        algorithms
+      })
+      if (!simulation?.results?.length || simulation.results.length !== algorithms.length) {
+        throw new Error('The simulation did not return all four policy results.')
       }
       setResults(simulation)
-      setPage('workload')
-      setWorkloadTab('simulation')
-      setMessage(`Simulation completed: ${simulation.schedules.adaptive_ml_sjf.length} processes executed.`)
+      setPage('comparison')
+      notify('Simulation completed successfully.', 'success')
     } catch (error) {
-      setMessage(`Simulation failed: ${error.message}`)
-    } finally { setLoading(false) }
+      notify(error.message, 'warning')
+    } finally {
+      setLoading(false)
+    }
   }
-  const chartData = useMemo(() => (results?.results || []).map(r => ({
-    name: (r.algorithm || '').replaceAll('_', '-').toUpperCase(),
-    waiting: r.average_waiting_time ?? 0,
-    turnaround: r.average_turnaround_time ?? 0,
-    utilization: r.cpu_utilization ?? 0
+
+  const chartData = useMemo(() => (results?.results || []).map(result => ({
+    name: formatAlgorithm(result.algorithm),
+    algorithm: result.algorithm,
+    waiting: Number(result.average_waiting_time || 0),
+    turnaround: Number(result.average_turnaround_time || 0),
+    response: Number(result.average_response_time || 0),
+    utilization: Number(result.cpu_utilization || 0),
+    throughput: Number(result.throughput || 0),
+    maximumWaiting: Number(result.maximum_waiting_time || 0)
   })), [results])
-  const totalSimulated = results?.results?.[0]?.completed_processes ?? 0
-  const activeModel = metrics.find(m => m.model === 'ensemble') || metrics[0]
-  const title = nav.find(n => n[2] === page)?.[0] || 'Overview'
-  const train = async () => {
-    setLoading(true)
-    try { await api.train({}); await loadData(); setMessage('Models trained and validated successfully.') }
-    catch (error) { setMessage(error.message) } finally { setLoading(false) }
-  }
 
-  return <div className="app-shell">
-    <aside className="sidebar">
-      <div className="brand"><div className="brand-mark"><Sparkles size={20}/></div><div><b>IntelliSched</b><span>Adaptive CPU intelligence</span></div></div>
-      <div className="nav-label">WORKSPACE</div>
-      <nav>{nav.map(([label, Icon, key]) => <button key={key} className={page === key ? 'active' : ''} onClick={() => setPage(key)}><Icon size={17}/><span>{label}</span>{key === 'settings' && <i/>}</button>)}</nav>
-      <div className="sidebar-bottom"><div className="system-status"><span className="pulse"/> Backend {summary ? 'connected' : 'connecting...'}</div><small>v1.0.0 · local workspace</small></div>
-    </aside>
-    <main className="main">
-      <header className="topbar"><div><span className="breadcrumb">INTELLISCHED / {title.toUpperCase()}</span><h1>{title}</h1></div><div className="top-actions"><span className="live"><span className="pulse"/> Live simulation</span><Button variant="secondary" onClick={loadData}><RefreshCw size={15}/> Refresh</Button><Button onClick={run} disabled={loading}><Play size={15}/> {loading ? 'Running...' : 'Run simulation'}</Button></div></header>
-      {message && <div className="alert">{message}</div>}
-      {page === 'overview' && <Overview summary={summary} metrics={metrics} adaptive={adaptive} chartData={chartData} totalSimulated={totalSimulated} run={run} loading={loading}/>}
-      {page === 'workload' && <><Tabs value={workloadTab} onChange={setWorkloadTab} items={[['processes', 'Process Manager'], ['scheduler', 'Scheduler Control'], ['simulation', 'Live Simulation']]}/>{workloadTab === 'processes' && <Processes processes={processes} setProcesses={setProcesses}/>} {workloadTab === 'scheduler' && <Scheduler algorithm={algorithm} setAlgorithm={setAlgorithm} processes={processes} run={run}/>} {workloadTab === 'simulation' && <Simulation results={results} schedules={results?.schedules} run={run} loading={loading}/>}</>}
-      {page === 'ml' && <Predictions metrics={metrics} onTrain={train} loading={loading}/>}
-      {page === 'performance' && <><Tabs value={performanceTab} onChange={setPerformanceTab} items={[['comparison', 'Algorithm Comparison'], ['whatif', 'What-if Experiments']]}/>{performanceTab === 'comparison' && <Performance results={results} chartData={chartData} run={run}/>} {performanceTab === 'whatif' && <WhatIf processes={processes} run={run}/>}</>}
-      {page === 'settings' && <><Tabs value={settingsTab} onChange={setSettingsTab} items={[['settings', 'General Settings'], ['adaptive', 'Adaptive Learning Monitor']]}/>{settingsTab === 'settings' ? <SettingsPage onSave={() => setMessage('Settings saved for the next simulation.')} /> : <Adaptive adaptive={adaptive} onRetrain={async () => { setLoading(true); try { await api.retrain(); await loadData(); setMessage('Adaptive model retrained and validated.'); } catch (error) { setMessage(error.message) } finally { setLoading(false) } }} loading={loading}/>}</>}
-    </main>
-  </div>
+  const title = pages.find(item => item[2] === page)?.[0] || 'Overview'
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand"><div className="brand-mark"><Cpu size={20} /></div><div><b>IntelliSched</b><span>Adaptive CPU scheduler</span></div></div>
+        <div className="nav-label">WORKSPACE</div>
+        <nav>{pages.map(([label, Icon, key]) => (
+          <button key={key} className={page === key ? 'active' : ''} onClick={() => setPage(key)}><Icon size={18} /><span>{label}</span></button>
+        ))}</nav>
+      </aside>
+
+      <main className="main">
+        <header className="topbar">
+          <div><span className="breadcrumb">INTELLISCHED / {title.toUpperCase()}</span><h1>{title}</h1></div>
+          <div className="top-actions">
+            <Button variant="secondary" onClick={loadData} disabled={analysisLoading}><RefreshCw size={14} /> Refresh</Button>
+            <Button onClick={run} disabled={loading}><Play size={14} /> {loading ? 'Running...' : 'Run Simulation'}</Button>
+          </div>
+        </header>
+        {message && <div className={`alert ${messageType === 'success' ? 'success' : ''}`}><span>{message}</span><button className="icon-button" onClick={() => setMessage('')}>×</button></div>}
+
+        {page === 'overview' && <Overview summary={summary} analysis={analysis} chartData={chartData} results={results} navigate={setPage} run={run} loading={loading} />}
+        {page === 'processes' && <Processes processes={processes} setProcesses={setProcesses} run={run} loading={loading} />}
+        {page === 'comparison' && <Comparison results={results} chartData={chartData} run={run} loading={loading} />}
+        {page === 'ml' && <ModelAnalysis analysis={analysis} loading={analysisLoading} />}
+        {page === 'adaptive' && <AdaptiveAnalysis results={results} chartData={chartData} />}
+      </main>
+    </div>
+  )
 }
 
-function Overview({ summary, metrics, adaptive, chartData, totalSimulated, run, loading }) {
-  const activeModel = metrics.find(m => m.model === 'ensemble') || metrics[0]
-  return <><div className="hero"><div><span className="tag"><WandSparkles size={13}/> ML-POWERED SCHEDULING</span><h2>Make every CPU cycle<br/><em>count.</em></h2><p>Predict burst duration, simulate fair scheduling, and learn from every execution.</p><Button onClick={run} disabled={loading}><Play size={15}/> {loading ? 'Running...' : 'Run a comparison'}</Button></div><div className="hero-orbit"><div className="orbit orbit-one"/><div className="orbit orbit-two"/><div className="orbit-center"><Cpu size={30}/><span>CPU</span></div></div></div>
-    <div className="section-heading"><div><h3>Workspace overview</h3><span>Live metrics from the active simulation</span></div><span className="updated"><span className="pulse"/> Backend-sourced</span></div>
-    <div className="metric-grid"><Metric icon={Cpu} label="Simulated processes" value={totalSimulated || '—'} note="completed in latest run" accent="violet"/><Metric icon={Database} label="Training records" value={summary?.rows ?? '—'} note="dataset observations" accent="blue"/><Metric icon={Gauge} label="CPU utilization" value={chartData.length ? `${Number(chartData[0].utilization).toFixed(1)}%` : '—'} note="latest FCFS baseline" accent="green"/><Metric icon={Timer} label="Prediction error" value={activeModel?.mae != null ? `${Number(activeModel.mae).toFixed(2)} ms` : '—'} note={`${activeModel?.model || 'Active model'} MAE`} accent="orange"/></div>
-    <div className="content-grid"><Card><div className="card-title"><div><h3>Scheduling performance</h3><span>Actual average waiting time by algorithm</span></div><BarChart3 size={18}/></div><div className="chart">{chartData.length ? <ResponsiveContainer width="100%" height={230}><BarChart data={chartData}><CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="name" fontSize={11}/><YAxis fontSize={11}/><Tooltip/><Bar dataKey="waiting" fill="#4263eb" radius={[5,5,0,0]}/></BarChart></ResponsiveContainer> : <Empty text="Run a comparison to see backend results"/>}</div></Card><Card><div className="card-title"><div><h3>Model comparison</h3><span>Held-out validation · lower is better</span></div><BrainCircuit size={18}/></div><div className="mini-table">{metrics.slice(0, 4).map((m, i) => <div className="mini-row" key={m.model || i}><b>{m.model}</b><span>{m.mae != null ? `${Number(m.mae).toFixed(2)} ms` : '—'}</span><strong className={m.model === activeModel?.model ? 'best' : ''}>{m.model === activeModel?.model ? 'ACTIVE' : 'VALIDATED'}</strong></div>)}</div></Card></div></>
+function Overview({ summary, analysis, chartData, results, navigate, run, loading }) {
+  return (
+    <>
+      <div className="hero"><div>
+        <span className="tag"><Cpu size={14} /> ADAPTIVE ML-BASED CPU SCHEDULER</span>
+        <h2>Understand every<br /><em>scheduling decision.</em></h2>
+        <p>Configure one workload and compare FCFS, SJF, ML-SJF, and Adaptive-ML-SJF with genuine backend metrics.</p>
+        <Button onClick={run} disabled={loading}><Play size={14} /> {loading ? 'Running...' : 'Run Comparison'}</Button>
+      </div><div className="hero-orbit"><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="orbit-center"><Cpu size={28} /><span>CPU</span></div></div></div>
+
+      <div className="section-heading"><div><h3>System Overview</h3><span>Dataset, model and latest simulation status</span></div></div>
+      <div className="metric-grid">
+        <Metric icon={Database} label="Dataset Records" value={summary?.rows ? Number(summary.rows).toLocaleString() : '—'} note="sjf_ml_training_dataset.csv" />
+        <Metric icon={Target} label="ML Features" value={analysis?.feature_count || '—'} note="Used by the estimators" accent="violet" />
+        <Metric icon={CheckCircle2} label="Latest Simulation" value={results ? 'Completed' : 'Not run'} note={results ? `${results.results?.[0]?.completed_processes || 0} processes` : 'Run a workload'} accent="green" />
+        <Metric icon={Gauge} label="Policies" value="4" note="Independent executions" accent="orange" />
+      </div>
+
+      <div className="content-grid">
+        <Card><div className="card-title"><div><h3>Average Waiting Time</h3><span>Latest simulation by policy</span></div><BarChart3 size={18} /></div>
+          {chartData.length ? <PerformanceChart data={chartData} dataKeys={[['waiting', 'Waiting (ms)', '#4361ee']]} /> : <Empty text="Run a simulation to populate this chart." />}
+        </Card>
+        <Card><div className="card-title"><div><h3>Quick Navigation</h3><span>Jump to a workspace section</span></div><ListOrdered size={18} /></div>
+          <div className="quick-links">
+            <Button variant="secondary" onClick={() => navigate('processes')}>Configure Processes</Button>
+            <Button variant="secondary" onClick={() => navigate('comparison')}>View Comparison</Button>
+            <Button variant="secondary" onClick={() => navigate('ml')}>Inspect ML Models</Button>
+            <Button variant="secondary" onClick={() => navigate('adaptive')}>Explain Adaptive Scheduler</Button>
+          </div>
+        </Card>
+      </div>
+    </>
+  )
 }
 
-function Processes({ processes, setProcesses }) { const update = (i, key, value) => setProcesses(processes.map((p, j) => j === i ? {...p, [key]: key === 'process_id' ? value : Number(value)} : p)); return <><div className="page-intro"><div><h2>Process manager</h2><p>Configure ground truth; prediction features never receive future actual bursts.</p></div><Button onClick={() => setProcesses([...processes, { process_id: `P${processes.length + 1}`, arrival_time: 0, actual_burst: 10, priority: 1 }])}>+ Add process</Button></div><Card><div className="table-wrap"><table><thead><tr><th>Process</th><th>Arrival (ms)</th><th>Actual burst (ms)</th><th>Priority</th><th>Visibility</th><th/></tr></thead><tbody>{processes.map((p, i) => <tr key={i}><td><input value={p.process_id} onChange={e => update(i, 'process_id', e.target.value)}/></td><td><input type="number" min="0" value={p.arrival_time} onChange={e => update(i, 'arrival_time', e.target.value)}/></td><td><input type="number" min="0.1" value={p.actual_burst} onChange={e => update(i, 'actual_burst', e.target.value)}/></td><td><input type="number" min="1" value={p.priority} onChange={e => update(i, 'priority', e.target.value)}/></td><td><span className="privacy"><span/> Ground truth</span></td><td><button className="icon-button" onClick={() => setProcesses(processes.filter((_, j) => j !== i))}>×</button></td></tr>)}</tbody></table></div></Card></> }
+function Processes({ processes, setProcesses, run, loading }) {
+  const update = (index, key, value) => setProcesses(processes.map((process, processIndex) => {
+    if (processIndex !== index) return process
+    if (key === 'process_id') return { ...process, process_id: value }
+    return { ...process, [key]: value === '' ? '' : Math.max(0, Number(value)) }
+  }))
 
-function Predictions({ metrics, onTrain, loading }) { return <><div className="page-intro"><div><h2>ML Studio</h2><p>EWMA, Random Forest, XGBoost, and Voting Ensemble on one leakage-safe test split.</p></div><Button onClick={onTrain} disabled={loading}><RefreshCw size={15}/> {loading ? 'Training...' : 'Train models'}</Button></div><div className="metric-grid"><Metric icon={BrainCircuit} label="Active model" value={metrics.find(m => m.model === 'ensemble')?.model || 'Not trained'} note="selected from validation" accent="violet"/><Metric icon={Timer} label="MAE" value={metrics[0]?.mae != null ? `${Number(metrics[0].mae).toFixed(3)} ms` : '—'} note="mean absolute error" accent="orange"/><Metric icon={Activity} label="RMSE" value={metrics[0]?.rmse != null ? `${Number(metrics[0].rmse).toFixed(3)} ms` : '—'} note="root mean squared error" accent="blue"/><Metric icon={Database} label="Feature importance" value="Available" note="model metadata" accent="green"/></div><Card><div className="card-title"><div><h3>Validated model leaderboard</h3><span>Actual backend evaluation metrics</span></div></div><div className="table-wrap"><table><thead><tr><th>Model</th><th>MAE</th><th>RMSE</th><th>R²</th><th>Training</th><th>Status</th></tr></thead><tbody>{metrics.map((m, i) => <tr key={i}><td><b>{m.model}</b></td><td>{Number(m.mae).toFixed(3)}</td><td>{Number(m.rmse).toFixed(3)}</td><td>{Number(m.r2).toFixed(3)}</td><td>{Number(m.training_time_ms).toFixed(1)} ms</td><td><span className="status-pill">{m.model === 'ensemble' ? 'Active' : 'Validated'}</span></td></tr>)}</tbody></table></div></Card></> }
+  const addProcess = () => setProcesses([...processes, { process_id: `P${processes.length + 1}`, arrival_time: 0, actual_burst: 10, priority: 1 }])
 
-function Scheduler({ algorithm, setAlgorithm, processes, run }) { return <><div className="page-intro"><div><h2>Scheduler control</h2><p>Non-preemptive selection with arrival-aware ready queues and adaptive aging.</p></div><Button onClick={run}><Play size={15}/> Simulate policies</Button></div><div className="scheduler-layout"><Card><h3>Scheduling policy</h3>{[['fcfs','FCFS','Arrival order'],['sjf','SJF','Shortest actual burst'],['ml_sjf','ML-SJF','Shortest predicted burst'],['adaptive_ml_sjf','Adaptive ML-SJF','Prediction + aging fairness']].map(([key, name, desc]) => <label className={`policy ${algorithm === key ? 'selected' : ''}`} key={key}><input type="radio" checked={algorithm === key} onChange={() => setAlgorithm(key)}/><span><b>{name}</b><small>{desc}</small></span></label>)}</Card><Card><div className="card-title"><div><h3>Ready queue preview</h3><span>{processes.length} processes loaded</span></div><Timer size={18}/></div><div className="queue">{processes.map((p, i) => <div className="queue-item" key={p.process_id}><span className="queue-number">{i + 1}</span><b>{p.process_id}</b><span>arrives {p.arrival_time} ms</span><em>priority {p.priority}</em></div>)}</div></Card></div></> }
-
-function Simulation({ results, schedules, run, loading }) {
-  const events = schedules?.adaptive_ml_sjf || schedules?.adaptive || []
-  const metrics = results?.results?.find(item => item.algorithm === 'adaptive_ml_sjf') || {}
-  const latest = events[events.length - 1]
-  return <><div className="page-intro"><div><h2>Live simulation</h2><p>Completed backend execution events and actual-burst timeline.</p></div><Button onClick={run} disabled={loading}><Play size={15}/> {loading ? 'Simulating...' : 'Run simulation'}</Button></div>
-    {!results && <Card><div className="simulation-empty"><div className="success-icon muted"><Cpu/></div><h3>CPU is idle</h3><p>Run a simulation to populate the real execution timeline.</p></div></Card>}
-    {results && <><div className="metric-grid"><Metric icon={Activity} label="Simulation status" value={metrics.status || 'Completed'} note="backend execution state" accent="green"/><Metric icon={Timer} label="Current time" value={`${Number(metrics.current_time || metrics.total_completion_time || 0).toFixed(1)} ms`} note="simulation clock" accent="blue"/><Metric icon={Cpu} label="Running process" value={metrics.running_process || 'None'} note="non-preemptive run completed" accent="violet"/><Metric icon={Database} label="Ready queue" value={latest?.ready_queue?.length ?? 0} note="at final decision point" accent="orange"/></div>
-      <Card><div className="card-title"><div><h3>Execution timeline</h3><span>Actual start and end times from Adaptive ML-SJF events</span></div></div><div className="gantt">{events.map(event => <div className="gantt-item" key={event.process_id} style={{flex: Math.max(.2, event.completion_time - event.start_time)}}><b>{event.process_id}</b><small>{Number(event.start_time).toFixed(1)}–{Number(event.completion_time).toFixed(1)} ms</small></div>)}</div></Card>
-      <Card><div className="card-title"><div><h3>Process states</h3><span>Every process completed by the backend simulator</span></div></div><div className="table-wrap"><table><thead><tr><th>Process</th><th>State</th><th>Start</th><th>End</th><th>Actual burst</th><th>Waiting</th><th>Ready queue</th></tr></thead><tbody>{events.map(event => <tr key={event.process_id}><td><b>{event.process_id}</b></td><td><span className="status-pill">{event.state}</span></td><td>{Number(event.start_time).toFixed(1)} ms</td><td>{Number(event.completion_time).toFixed(1)} ms</td><td>{Number(event.actual_burst).toFixed(1)} ms</td><td>{Number(event.waiting_time).toFixed(1)} ms</td><td>{event.ready_queue?.join(', ') || 'Empty'}</td></tr>)}</tbody></table></div></Card></>}
-  </>
+  return (
+    <>
+      <div className="page-intro"><div><h2>Process Manager</h2><p>The same workload is sent independently to all four algorithms.</p></div>
+        <div style={{ display: 'flex', gap: 10 }}><Button variant="secondary" onClick={() => setProcesses([...defaultProcesses])}>Reset</Button><Button onClick={run} disabled={loading}><Play size={14} /> Run Simulation</Button></div>
+      </div>
+      <Card><div className="table-wrap"><table><thead><tr><th>Process ID</th><th>Arrival Time (ms)</th><th>Burst Time (ms)</th><th>Priority</th><th /></tr></thead>
+        <tbody>{processes.map((process, index) => <tr key={`${process.process_id}-${index}`}>
+          <td><input value={process.process_id} onChange={event => update(index, 'process_id', event.target.value)} /></td>
+          <td><input type="number" min="0" step="any" value={process.arrival_time} onChange={event => update(index, 'arrival_time', event.target.value)} /></td>
+          <td><input type="number" min="0.1" step="any" value={process.actual_burst} onChange={event => update(index, 'actual_burst', event.target.value)} /></td>
+          <td><input type="number" min="1" step="1" value={process.priority} onChange={event => update(index, 'priority', event.target.value)} /></td>
+          <td><button className="icon-button" title="Delete process" onClick={() => setProcesses(processes.filter((_, itemIndex) => itemIndex !== index))}>×</button></td>
+        </tr>)}</tbody>
+      </table></div></Card>
+    </>
+  )
 }
 
-function Performance({ results, chartData, run }) { return <><div className="page-intro"><div><h2>Algorithm comparison</h2><p>Identical workloads, four policies, metrics calculated from actual execution.</p></div><Button onClick={run}><RefreshCw size={15}/> Re-run comparison</Button></div><Card><div className="card-title"><div><h3>Waiting and turnaround time</h3><span>Backend simulation results · milliseconds</span></div></div>{chartData.length ? <ResponsiveContainer width="100%" height={300}><BarChart data={chartData}><CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="name"/><YAxis/><Tooltip/><Bar dataKey="waiting" fill="#4263eb" name="Waiting"/><Bar dataKey="turnaround" fill="#15aabf" name="Turnaround"/></BarChart></ResponsiveContainer> : <Empty text="Run the comparison to load actual results"/>}</Card><Card><div className="table-wrap"><table><thead><tr><th>Algorithm</th><th>Avg waiting</th><th>Avg turnaround</th><th>Utilization</th><th>Throughput</th><th>Context switches</th></tr></thead><tbody>{(results?.results || []).map((r, i) => <tr key={i}><td><b>{r.algorithm}</b></td><td>{Number(r.average_waiting_time).toFixed(2)}</td><td>{Number(r.average_turnaround_time).toFixed(2)}</td><td>{Number(r.cpu_utilization).toFixed(1)}%</td><td>{Number(r.throughput).toFixed(3)}</td><td>{r.context_switches}</td></tr>)}</tbody></table></div></Card></> }
+function Comparison({ results, chartData, run, loading }) {
+  const [activeAlgorithm, setActiveAlgorithm] = useState('adaptive_ml_sjf')
+  const events = results?.schedules?.[activeAlgorithm] || []
+  const sjfResult = chartData.find(result => result.algorithm === 'sjf')
+  const mlResult = chartData.find(result => result.algorithm === 'ml_sjf')
+  const resultsDiffer = sjfResult && mlResult
+    && Math.abs(sjfResult.waiting - mlResult.waiting) > 0.005
+  return (
+    <>
+      <div className="page-intro"><div><h2>Scheduling Comparison</h2><p>Four independent executions against the identical workload.</p></div><Button onClick={run} disabled={loading}><RefreshCw size={14} /> {loading ? 'Running...' : 'Run Again'}</Button></div>
+      <div className="metric-grid">
+        <Metric icon={Timer} label="Avg Waiting" value={metricAverage(chartData, 'waiting')} note="Milliseconds" />
+        <Metric icon={Activity} label="Avg Turnaround" value={metricAverage(chartData, 'turnaround')} note="Milliseconds" accent="violet" />
+        <Metric icon={Gauge} label="CPU Utilization" value={metricAverage(chartData, 'utilization', '%')} note="Across policies" accent="orange" />
+      </div>
+      <Card><div className="card-title"><div><h3>Policy Metrics</h3><span>Waiting and turnaround times. In non-preemptive scheduling, response time equals waiting time.</span></div></div>{chartData.length ? <PerformanceChart data={chartData} dataKeys={[['waiting', 'Waiting (ms)', '#4361ee'], ['turnaround', 'Turnaround (ms)', '#06b6d4']]} /> : <Empty text="Run the simulation to generate genuine results." />}</Card>
+      {sjfResult && mlResult && (
+        <Card className="comparison-note">
+          <b>SJF vs ML-SJF:</b>{' '}
+          {resultsDiffer
+            ? `SJF averages ${sjfResult.waiting.toFixed(2)} ms waiting because it uses actual burst times, while ML-SJF averages ${mlResult.waiting.toFixed(2)} ms because it uses model predictions.`
+            : 'Both policies currently produce the same result for this workload; a real difference requires the ML predictions to change the selected process order.'}
+        </Card>
+      )}
+      <Card><div className="card-title"><div><h3>Results Table</h3><span>Each row comes from a separate backend scheduling run</span></div></div>
+        {chartData.length ? <div className="table-wrap"><table><thead><tr><th>Algorithm</th><th>Avg Waiting</th><th>Avg Turnaround</th><th>CPU Utilization</th><th>Throughput</th></tr></thead><tbody>
+          {chartData.map(result => <tr key={result.algorithm}><td><b>{result.name}</b></td><td>{result.waiting.toFixed(2)} ms</td><td>{result.turnaround.toFixed(2)} ms</td><td>{result.utilization.toFixed(1)}%</td><td>{result.throughput.toFixed(3)} / ms</td></tr>)}
+        </tbody></table></div> : <Empty text="No result table yet." />}
+      </Card>
+      <Card><div className="card-title"><div><h3>Execution Order & Gantt Chart</h3><span>Select a policy to inspect its independent schedule.</span></div></div>
+        <div className="algo-pills">{algorithms.map(algorithm => <button key={algorithm} className={`algo-pill ${activeAlgorithm === algorithm ? 'active' : ''}`} onClick={() => setActiveAlgorithm(algorithm)}>{formatAlgorithm(algorithm)}</button>)}</div>
+        {events.length ? <><Gantt events={events} /><div className="table-wrap"><table><thead><tr><th>Order</th><th>Process</th><th>Start</th><th>End</th><th>Waiting</th><th>Response</th></tr></thead><tbody>
+          {events.map((event, index) => <tr key={event.process_id}><td>{index + 1}</td><td><b>{event.process_id}</b></td><td>{Number(event.start_time).toFixed(2)} ms</td><td>{Number(event.completion_time).toFixed(2)} ms</td><td>{Number(event.waiting_time).toFixed(2)} ms</td><td>{Number(event.response_time).toFixed(2)} ms</td></tr>)}
+        </tbody></table></div></> : <Empty text="Run a simulation to view schedules." />}
+      </Card>
+    </>
+  )
+}
 
-function WhatIf({ processes, run }) { return <><div className="page-intro"><div><h2>What-if experiments</h2><p>Modify the workload in Process Manager, then rerun all algorithms for a before-and-after comparison.</p></div><Button onClick={run}><GitCompare size={15}/> Compare scenario</Button></div><Card><h3>Current scenario</h3><p className="muted">The next comparison uses the same editable workload across FCFS, SJF, ML-SJF, and Adaptive ML-SJF.</p><div className="scenario-summary"><span><b>{processes.length}</b> processes</span><span><b>{processes.reduce((a, p) => a + Number(p.actual_burst), 0).toFixed(1)} ms</b> total work</span><span><b>{new Set(processes.map(p => p.priority)).size}</b> priority bands</span></div></Card></> }
+function ModelAnalysis({ analysis, loading }) {
+  const [selectedModel, setSelectedModel] = useState('ensemble')
+  const metrics = analysis?.metrics || []
+  const points = (analysis?.points || []).map(point => ({ actual: point.actual, predicted: point.predictions?.[selectedModel] })).filter(point => Number.isFinite(point.predicted))
+  const residuals = points.map(point => ({
+    actual: point.actual,
+    predicted: point.predicted,
+    residual: point.actual - point.predicted
+  }))
+  const scatterMax = points.length ? Math.max(...points.flatMap(point => [point.actual, point.predicted])) * 1.05 : 1
+  const importance = Object.entries(analysis?.feature_importance?.random_forest || {}).map(([feature, value]) => ({ feature, importance: value })).sort((a, b) => b.importance - a.importance).slice(0, 10)
 
-function Adaptive({ adaptive, onRetrain, loading }) { return <><div className="page-intro"><div><h2>Adaptive learning monitor</h2><p>Feedback is validated before a new model becomes active.</p></div><Button onClick={onRetrain} disabled={loading}><RefreshCw size={15}/> Retrain now</Button></div><div className="metric-grid"><Metric icon={Database} label="Observations" value={adaptive?.observations ?? '—'} note="feedback samples stored" accent="violet"/><Metric icon={RefreshCw} label="Next retrain" value={adaptive?.samples_until_retrain ?? '—'} note="new samples remaining" accent="orange"/><Metric icon={BrainCircuit} label="Model version" value={adaptive?.model_version || '—'} note="currently active" accent="blue"/></div><Card><div className="card-title"><div><h3>Learning health</h3><span>Backend adaptive state</span></div></div><div className="health"><div className="health-bar"><span style={{width: `${Math.min(100, Number(adaptive?.progress_percent || 12))}%`}}/></div><p>{adaptive?.status || 'No observations yet. Execute a simulation and submit feedback to begin adaptive learning.'}</p></div></Card></> }
-function SettingsPage({ onSave }) { return <><div className="page-intro"><div><h2>General settings</h2><p>Configure prediction and fairness behavior for local experiments.</p></div><Button variant="secondary" onClick={onSave}>Save settings</Button></div><Card><div className="settings-grid">{[['EWMA alpha','0.30','Recent burst influence.'],['Retraining interval','25','Feedback observations between validation runs.'],['Aging rate','0.10','Fairness bonus for waiting processes.'],['Random forest trees','200','Estimator count for the regressor.']].map(([label, value, hint]) => <label key={label}><span>{label}</span><input defaultValue={value}/><small>{hint}</small></label>)}</div></Card></> }
+  if (loading) return <Card><Empty text="Loading held-out model evaluation..." /></Card>
+  if (!analysis?.metrics?.length) return <Card><Empty text="No cached model evaluation is available." /></Card>
+
+  return (
+    <>
+      <div className="page-intro"><div><h2>ML Model Analysis</h2><p>Offline evaluation uses the held-out test split and cached model outputs.</p></div></div>
+      <div className="metric-grid"><Metric icon={Database} label="Dataset Rows" value={analysis.dataset_rows?.toLocaleString() || '—'} note={`sjf_ml_training_dataset.csv · ${analysis.train_rows || 0} train / ${analysis.test_rows || 0} test`} /><Metric icon={Target} label="Feature Count" value={analysis.feature_count || 0} note="Model input columns" accent="violet" /><Metric icon={BrainCircuit} label="Models" value={metrics.length} note="Available evaluation rows" accent="green" /><Metric icon={CheckCircle2} label="Evaluation" value="Held-out" note="No live data leakage" accent="orange" /></div>
+      <Card><div className="card-title"><div><h3>Model Metrics</h3><span>MAE, RMSE and R² on actual test targets</span></div></div><div className="table-wrap"><table><thead><tr><th>Model</th><th>MAE</th><th>RMSE</th><th>R²</th><th>Training Time</th></tr></thead><tbody>{metrics.map(metric => <tr key={metric.model}><td><button className={`text-button ${selectedModel === metric.model ? 'selected' : ''}`} onClick={() => setSelectedModel(metric.model)}><b>{metric.model}</b></button></td><td>{Number(metric.mae).toFixed(3)}</td><td>{Number(metric.rmse).toFixed(3)}</td><td>{Number(metric.r2).toFixed(3)}</td><td>{Number(metric.training_time_ms).toFixed(1)} ms</td></tr>)}</tbody></table></div></Card>
+      <div className="content-grid">
+        <Card>
+          <div className="card-title"><div><h3>Actual vs Predicted</h3><span>{selectedModel} on held-out rows</span></div></div>
+          {points.length ? (
+            <ResponsiveContainer width="100%" height={280}>
+              <ScatterChart margin={{ top: 12, right: 24, bottom: 52, left: 24 }}>
+                <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" />
+                <XAxis
+                  type="number"
+                  dataKey="actual"
+                  name="Actual CPU Burst Time"
+                  unit=" ms"
+                  domain={[0, scatterMax]}
+                  tick={{ fill: '#64748b', fontSize: 11 }}
+                  label={{ value: 'Actual CPU Burst Time (ms)', position: 'insideBottom', offset: -28, fill: '#475569', fontSize: 12, fontWeight: 600 }}
+                />
+                <YAxis
+                  type="number"
+                  dataKey="predicted"
+                  name="Predicted CPU Burst Time"
+                  unit=" ms"
+                  domain={[0, scatterMax]}
+                  tick={{ fill: '#64748b', fontSize: 11 }}
+                  width={72}
+                  label={{ value: 'Predicted CPU Burst Time (ms)', angle: -90, position: 'insideLeft', offset: 8, fill: '#475569', fontSize: 12, fontWeight: 600 }}
+                />
+                <Tooltip cursor={{ stroke: '#94a3b8', strokeDasharray: '3 3' }} content={<ActualPredictedTooltip />} />
+                <ReferenceLine
+                  segment={[{ x: 0, y: 0 }, { x: scatterMax, y: scatterMax }]}
+                  stroke="#94a3b8"
+                  strokeWidth={1.5}
+                  strokeDasharray="5 5"
+                  ifOverflow="extendDomain"
+                />
+                <Scatter name="Held-out observations" data={points} fill="#4361ee" shape={<SmallScatterPoint />} />
+              </ScatterChart>
+            </ResponsiveContainer>
+          ) : (
+            <Empty text="Selected model has no held-out predictions." />
+          )}
+        </Card>
+        <Card>
+          <div className="card-title"><div><h3>Residual vs Predicted</h3><span>{selectedModel}: Actual minus Predicted</span></div></div>
+          {residuals.length ? (
+            <ResponsiveContainer width="100%" height={280}>
+              <ScatterChart margin={{ top: 12, right: 24, bottom: 52, left: 24 }}>
+                <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" />
+                <XAxis
+                  type="number"
+                  dataKey="predicted"
+                  name="Predicted CPU Burst Time"
+                  unit=" ms"
+                  tick={{ fill: '#64748b', fontSize: 11 }}
+                  label={{ value: 'Predicted CPU Burst Time (ms)', position: 'insideBottom', offset: -28, fill: '#475569', fontSize: 12, fontWeight: 600 }}
+                />
+                <YAxis
+                  type="number"
+                  dataKey="residual"
+                  name="Residual Error"
+                  unit=" ms"
+                  tick={{ fill: '#64748b', fontSize: 11 }}
+                  width={72}
+                  label={{ value: 'Residual Error (ms)', angle: -90, position: 'insideLeft', offset: 8, fill: '#475569', fontSize: 12, fontWeight: 600 }}
+                />
+                <Tooltip cursor={{ stroke: '#94a3b8', strokeDasharray: '3 3' }} content={<ResidualTooltip />} />
+                <ReferenceLine y={0} stroke="#ef4444" strokeWidth={2} ifOverflow="extendDomain" />
+                <Scatter name="Residual observations" data={residuals} fill="#8b5cf6" shape={<SmallScatterPoint />} />
+              </ScatterChart>
+            </ResponsiveContainer>
+          ) : (
+            <Empty text="No residual data." />
+          )}
+        </Card>
+      </div>
+      <Card><div className="card-title"><div><h3>Feature Importance</h3><span>Random Forest importance from the trained model</span></div></div>{importance.length ? <ResponsiveContainer width="100%" height={300}><BarChart data={importance} layout="vertical" margin={{ left: 30 }}><CartesianGrid strokeDasharray="3 3" /><XAxis type="number" /><YAxis type="category" dataKey="feature" width={140} fontSize={10} /><Tooltip /><Bar dataKey="importance" fill="#06b6d4" /></BarChart></ResponsiveContainer> : <Empty text="Feature importance is unavailable." />}</Card>
+    </>
+  )
+}
+
+function AdaptiveAnalysis({ results, chartData }) {
+  const events = results?.schedules?.adaptive_ml_sjf || []
+  const mlEvents = results?.schedules?.ml_sjf || []
+  const sameOrder = events.length > 0 && events.length === mlEvents.length
+    && events.every((event, index) => event.process_id === mlEvents[index]?.process_id)
+  const mlResult = chartData.find(result => result.algorithm === 'ml_sjf')
+  const adaptiveResult = chartData.find(result => result.algorithm === 'adaptive_ml_sjf')
+  const comparison = [mlResult, adaptiveResult].filter(Boolean)
+  return (
+    <>
+      <div className="page-intro"><div><h2>Adaptive Scheduler Analysis</h2><p>Adaptive-ML-SJF uses Adjusted Burst = Predicted Burst − (Waiting Time × 0.10).</p>{sameOrder && <small className="muted">The current workload produces the same order as ML-SJF; this is valid when the adjustment does not change the ranking.</small>}</div></div>
+      <div className="metric-grid"><Metric icon={Timer} label="Maximum Waiting" value={events.length ? `${Math.max(...events.map(event => event.waiting_time)).toFixed(2)} ms` : '—'} note="Adaptive schedule" /><Metric icon={Gauge} label="Average Waiting" value={adaptiveResult ? `${adaptiveResult.waiting.toFixed(2)} ms` : '—'} note="Adaptive schedule" accent="violet" /><Metric icon={TrendingUp} label="Adjustment Factor" value="0.10" note="Waiting-time multiplier" accent="green" /><Metric icon={ListOrdered} label="Selection Order" value={events.length || '—'} note="Completed processes" accent="orange" /></div>
+      <Card><div className="card-title"><div><h3>ML-SJF vs Adaptive-ML-SJF</h3><span>Independent metrics from the same workload</span></div></div>{comparison.length ? <PerformanceChart data={comparison} dataKeys={[['waiting', 'Waiting (ms)', '#4361ee'], ['turnaround', 'Turnaround (ms)', '#06b6d4']]} /> : <Empty text="Run a simulation to compare adaptive scheduling." />}</Card>
+      <Card><div className="card-title"><div><h3>Adaptive Process Decisions</h3><span>Predicted burst, waiting adjustment and selection explanation</span></div></div>{events.length ? <div className="table-wrap"><table><thead><tr><th>Order</th><th>Process</th><th>Predicted</th><th>Waiting</th><th>Adjustment</th><th>Adjusted Burst</th><th>Why selected</th></tr></thead><tbody>{events.map((event, index) => <tr key={event.process_id}><td>{index + 1}</td><td><b>{event.process_id}</b></td><td>{Number(event.predicted_burst).toFixed(2)} ms</td><td>{Number(event.waiting_time).toFixed(2)} ms</td><td>{Number(event.waiting_adjustment).toFixed(2)} ms</td><td>{Number(event.adjusted_burst).toFixed(2)} ms</td><td>{event.selection_reason}</td></tr>)}</tbody></table></div> : <Empty text="Run a simulation to inspect adaptive decisions." />}</Card>
+    </>
+  )
+}
+
+function PerformanceChart({ data, dataKeys }) {
+  return <ResponsiveContainer width="100%" height={280}><BarChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" /><XAxis dataKey="name" fontSize={10} stroke="#64748b" /><YAxis fontSize={11} stroke="#64748b" /><Tooltip /><>{dataKeys.map(([key, label, fill]) => <Bar key={key} dataKey={key} fill={fill} name={label} radius={[4, 4, 0, 0]} />)}</></BarChart></ResponsiveContainer>
+}
+
+function Gantt({ events }) {
+  const blocks = []
+  let clock = 0
+  events.forEach(event => {
+    if (event.start_time > clock) blocks.push({ process_id: 'IDLE', duration: event.start_time - clock, start: clock, end: event.start_time, idle: true })
+    blocks.push({ process_id: event.process_id, duration: event.completion_time - event.start_time, start: event.start_time, end: event.completion_time })
+    clock = event.completion_time
+  })
+  const totalTime = Math.max(clock, 1)
+  return (
+    <div className="gantt-scale">
+      <div className="gantt-axis"><span>0 ms</span><span>{totalTime.toFixed(1)} ms</span></div>
+      <div className="gantt">
+        {blocks.map((block, index) => (
+          <div
+            key={`${block.process_id}-${index}`}
+            className={`gantt-item ${block.idle ? 'idle' : ''}`}
+            style={{ width: `${Math.max((block.duration / totalTime) * 100, 8)}%` }}
+            title={`${block.process_id}: ${Number(block.start).toFixed(1)} - ${Number(block.end).toFixed(1)} ms`}
+          >
+            <b>{block.process_id}</b>
+            <small>{Number(block.start).toFixed(1)}–{Number(block.end).toFixed(1)} ms</small>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function metricAverage(data, key, suffix = ' ms') {
+  if (!data.length) return '—'
+  return `${(data.reduce((sum, item) => sum + item[key], 0) / data.length).toFixed(2)}${suffix}`
+}

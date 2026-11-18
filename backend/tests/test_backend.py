@@ -1,5 +1,7 @@
 from fastapi.testclient import TestClient
 from backend.app.main import app
+from backend.app.scheduler import schedule
+from backend.app.schemas import Process
 
 client = TestClient(app)
 
@@ -41,6 +43,9 @@ def test_api_compare_accepts_frontend_workload_and_preserves_idle_time():
     assert response.json()["schedules"]["adaptive_ml_sjf"][0]["state"] == "completed"
     assert "start_time" in response.json()["schedules"]["adaptive_ml_sjf"][0]
     assert "ready_queue" in response.json()["schedules"]["adaptive_ml_sjf"][0]
+    # Check that predicted_burst is properly calculated (not fallback to actual_burst)
+    first_proc = response.json()["schedules"]["adaptive_ml_sjf"][0]
+    assert first_proc["predicted_burst"] > 0
 
 
 def test_dataset_summary_and_real_metrics():
@@ -49,3 +54,63 @@ def test_dataset_summary_and_real_metrics():
     assert summary.status_code == 200
     assert summary.json()["rows"] > 0
     assert {row["model"] for row in metrics.json()["models"]} >= {"ewma", "random_forest", "ensemble"}
+
+
+def test_ml_analysis_contains_held_out_predictions():
+    response = client.get("/api/ml/analysis")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["feature_count"] > 0
+    assert payload["train_rows"] > payload["test_rows"]
+    assert payload["points"]
+    assert {"actual", "predictions"} <= set(payload["points"][0])
+    assert "ensemble" in payload["points"][0]["predictions"]
+    assert payload["feature_importance"]
+
+
+def test_comparison_exposes_response_and_adaptive_decision_metrics():
+    response = client.post("/api/simulation/compare", json={
+        "processes": [
+            {"process_id": "first", "arrival_time": 0, "actual_burst": 10, "priority": 2},
+            {"process_id": "short", "arrival_time": 0, "actual_burst": 2, "priority": 1},
+        ],
+        "algorithms": ["fcfs", "sjf", "ml_sjf", "adaptive_ml_sjf"],
+    })
+    assert response.status_code == 200
+    adaptive = response.json()["schedules"]["adaptive_ml_sjf"][1]
+    assert "response_time" in adaptive
+    assert "adjusted_burst" in adaptive
+    assert "waiting_adjustment" in adaptive
+    assert adaptive["selection_reason"]
+    assert "average_response_time" in response.json()["results"][0]
+
+
+def test_ml_features_do_not_use_actual_burst_as_predictor_input():
+    observed = []
+
+    def predictor(features):
+        observed.append(features)
+        return 5.0
+
+    schedule([Process(process_id="leak-check", actual_burst=99)], "ml_sjf", predictor)
+    assert observed[0]["prev_burst_1"] == 10.0
+    assert observed[0]["avg_burst"] == 10.0
+
+
+def test_adaptive_status_and_batch_feedback():
+    initial_status = client.get("/api/adaptive/status").json()
+    assert "observations" in initial_status
+    assert "progress_percent" in initial_status
+
+    # Submit batch feedback
+    batch_res = client.post("/api/adaptive/feedback/batch", json={
+        "observations": [
+            {"features": {"prev_burst_1": 10}, "actual_burst": 9.5},
+            {"features": {"prev_burst_1": 15}, "actual_burst": 14.8}
+        ]
+    })
+    assert batch_res.status_code == 200
+    assert batch_res.json()["status"] == "accepted"
+
+    updated_status = client.get("/api/adaptive/status").json()
+    assert updated_status["observations"] >= initial_status["observations"] + 2

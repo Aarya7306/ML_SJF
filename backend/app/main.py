@@ -1,15 +1,22 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
-from .ml import DATASET, FEATURE_COLUMNS
-from .ml import BurstModel
-from .schemas import (FeedbackRequest, PredictionRequest, PredictionResponse,
-                      ScheduleRequest, ScheduleResponse, SimulationRequest, SimulationResponse)
+from .ml import DATASET, BurstModel
+from .schemas import (
+    BatchFeedbackRequest, FeedbackRequest, PredictionRequest, PredictionResponse,
+    ScheduleRequest, ScheduleResponse, SimulationRequest, SimulationResponse
+)
 from .scheduler import schedule
 
 app = FastAPI(title="IntelliSched API", version="1.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-                   allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 model = BurstModel()
 feedback_count = 0
 last_simulation = {}
@@ -27,14 +34,26 @@ def api_health():
 
 @app.get("/api/dataset/summary")
 def dataset_summary():
-    frame = pd.read_csv(DATASET)
-    return {"rows": len(frame), "columns": list(frame.columns),
-            "target": "next_burst_ms", "cpu_utilization": float(frame["cpu_utilization"].mean())}
+    if model.dataset_frame is not None:
+        frame = model.dataset_frame
+    else:
+        frame = pd.read_csv(DATASET)
+    return {
+        "rows": len(frame),
+        "columns": list(frame.columns),
+        "target": "next_burst_ms",
+        "cpu_utilization": float(frame["cpu_utilization"].mean()) if "cpu_utilization" in frame else 50.0,
+    }
 
 
 @app.get("/api/ml/metrics")
 def ml_metrics():
     return {"models": model.metrics}
+
+
+@app.get("/api/ml/analysis")
+def ml_analysis():
+    return {"metrics": model.metrics, **model.evaluation}
 
 
 @app.post("/api/ml/train")
@@ -59,18 +78,14 @@ def api_predict(request: PredictionRequest):
 
 @app.post("/schedule", response_model=ScheduleResponse)
 def make_schedule(request: ScheduleRequest):
-    if not request.processes:
-        return ScheduleResponse(algorithm=request.algorithm, schedule=[], metrics={
-            "average_waiting_time": 0.0, "average_turnaround_time": 0.0, "throughput": 0.0, "fairness": 1.0})
-    algorithm = request.algorithm.replace("_", "-")
-    result, metrics = schedule(request.processes, algorithm, lambda f: model.predict(f, "ensemble"))
+    result, metrics = schedule(request.processes, request.algorithm, lambda f: model.predict(f, "ensemble"))
     return ScheduleResponse(algorithm=request.algorithm, schedule=result, metrics=metrics)
 
 
 @app.post("/simulate", response_model=SimulationResponse)
 def simulate(request: SimulationRequest):
     return SimulationResponse(results={
-        algorithm: schedule(request.processes, algorithm.replace("_", "-"), lambda f: model.predict(f, "ensemble"))[1]
+        algorithm: schedule(request.processes, algorithm, lambda f: model.predict(f, "ensemble"))[1]
         for algorithm in request.algorithms
     })
 
@@ -81,13 +96,14 @@ def api_compare(request: SimulationRequest):
     results = {}
     schedules = {}
     for algorithm in request.algorithms:
-        normalized = algorithm.replace("_", "-")
-        scheduled, metrics = schedule(request.processes, normalized, lambda f: model.predict(f, "ensemble"))
+        scheduled, metrics = schedule(request.processes, algorithm, lambda f: model.predict(f, "ensemble"))
         results[algorithm] = metrics
         schedules[algorithm] = [item.model_dump() for item in scheduled]
     last_simulation = {"results": results, "schedules": schedules}
-    return {"results": [{"algorithm": name, **values} for name, values in results.items()],
-            "schedules": schedules}
+    return {
+        "results": [{"algorithm": name, **values} for name, values in results.items()],
+        "schedules": schedules
+    }
 
 
 @app.post("/api/simulation/run")
@@ -104,8 +120,16 @@ def get_simulation(simulation_id: str):
 
 @app.get("/api/adaptive/status")
 def adaptive_status():
-    return {"status": "Ready", "observations": feedback_count,
-            "samples_until_retrain": max(0, 25 - feedback_count), "model_version": "v1.0"}
+    samples_left = (25 - (feedback_count % 25)) if (feedback_count % 25) != 0 else (0 if feedback_count > 0 else 25)
+    progress = round(((25 - samples_left) / 25.0) * 100.0, 1)
+    version = f"v1.{feedback_count // 25}"
+    return {
+        "status": "Ready" if feedback_count == 0 else f"Active ({feedback_count} feedback samples received)",
+        "observations": feedback_count,
+        "samples_until_retrain": samples_left,
+        "progress_percent": progress,
+        "model_version": version
+    }
 
 
 @app.post("/feedback")
@@ -119,12 +143,24 @@ def feedback(request: FeedbackRequest):
 @app.post("/models/retrain")
 def retrain():
     model.train()
-    return {"status": "retrained", "models": model.available_models}
+    return {"status": "retrained", "models": model.available_models, "observations": feedback_count}
 
 
 @app.post("/api/adaptive/feedback")
 def api_feedback(request: FeedbackRequest):
     return feedback(request)
+
+
+@app.post("/api/adaptive/feedback/batch")
+def api_feedback_batch(request: BatchFeedbackRequest):
+    global feedback_count
+    for item in request.observations:
+        feedback_count += 1
+        model.feedback(item.features, item.actual_burst, buffer_only=True)
+    # Automatically retrain when reaching interval
+    if feedback_count >= 25 and feedback_count % 25 < len(request.observations):
+        model.train()
+    return {"status": "accepted", "observations": feedback_count, "models": model.available_models}
 
 
 @app.post("/api/adaptive/retrain")

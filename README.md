@@ -1,55 +1,85 @@
 # IntelliSched
 
-IntelliSched is an adaptive CPU scheduling simulator. It compares FCFS, idealized
-SJF, ML-SJF, and adaptive ML-SJF using the same workload, while evaluating EWMA,
-Random Forest, XGBoost, and an ensemble burst predictor against the supplied
-`sjf_ml_training_dataset.csv`.
+IntelliSched is a full-stack adaptive ML-based CPU scheduling project. The React
+dashboard sends one process workload to four non-preemptive scheduling policies
+and displays genuine backend metrics, schedules and held-out ML evaluation.
 
-## Windows setup
+## Requirements
 
-Open PowerShell in this folder:
+- Windows 10/11
+- Python 3.11
+- Node.js and npm
+- `sjf_ml_training_dataset.csv` in the project root
+
+The runtime also expects the serialized model cache at
+`backend/app/model_cache.pkl`. The cache is optional: if it is missing or
+outdated, the API trains the offline models and recreates it.
+
+## Start the application
+
+Install Python dependencies:
 
 ```powershell
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
 python -m pip install -r backend\requirements.txt
 python -m pip install pytest httpx
 ```
 
-Start the API in one PowerShell window:
+Start the FastAPI backend:
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
-python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+py -3.11 -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Start the dashboard in a second PowerShell window:
+Start the React dashboard in another terminal:
 
 ```powershell
-Set-Location frontend
+cd frontend
 npm install
-npm run dev
+npm run dev -- --host 127.0.0.1
 ```
 
-Open http://localhost:5173. The API documentation is available at
-http://localhost:8000/docs.
+Open `http://127.0.0.1:5173`. API documentation is available at
+`http://127.0.0.1:8000/docs`.
 
-## Tests and production build
+## Dashboard sections
+
+1. **Overview** - dataset summary, ML feature count, latest simulation status,
+   four-policy summary and quick navigation.
+2. **Processes** - add, edit, delete and reset the workload.
+3. **Scheduling Comparison** - compare FCFS, ideal SJF, ML-SJF and
+   Adaptive-ML-SJF with metrics, Gantt charts and execution order.
+4. **ML Model Analysis** - EWMA, Random Forest, XGBoost and Ensemble metrics,
+   held-out scatter plots, residual plot and feature importance.
+5. **Adaptive Scheduler Analysis** - predicted and adjusted bursts, waiting
+   adjustments, process decisions and ML-SJF comparison.
+
+## Core datasets and files
+
+The only runtime training dataset is `sjf_ml_training_dataset.csv`. It contains
+12,000 rows, 11 model input features and the `next_burst_ms` target.
+
+The following source files are no longer part of the project:
+
+- `sjf_ml_dataset_full.csv`
+- `sjf_cpu_burst_dataset.xlsx`
+- `Task_2_EDA_EWMA_Baseline.ipynb`
+
+They were not referenced by the backend, frontend or tests and are not required
+for training or live scheduling.
+
+## Validation
+
+Run backend tests:
 
 ```powershell
-python -m pytest backend\tests -q
-Set-Location frontend
+py -3.11 -m pytest backend\tests -q
+```
+
+Run the frontend production build:
+
+```powershell
+cd frontend
 npm run build
 ```
-
-The backend is the source of truth for dataset summaries, model evaluation,
-predictions, simulation results, and adaptive feedback. Process `actual_burst`
-values are ground truth used only for execution and evaluation; ML-SJF makes
-selection decisions from predicted values. Scheduling is non-preemptive and
-the simulator accounts for arrival-time CPU idle periods.
-
-If the CSV dataset is unavailable, the service fails explicitly rather than
-fabricating model results. Place the expected file at the repository root or
-provide a replacement with the documented feature columns and `next_burst_ms`
-target.
